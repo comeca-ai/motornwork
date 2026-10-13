@@ -1,0 +1,90 @@
+[
+  {
+    "file": "n8n/workflows/politica-categorizada-v2.json",
+    "name": "PDF → OpenAI → Política categorizada",
+    "nodes": 5,
+    "sha256": "68300264d48b6e27ea1d970056df6db295aad8b6746463e6b62da0ede305b5af",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/politica-categorizada-v3.json",
+    "name": "PDF → OpenAI → Política categorizada",
+    "nodes": 6,
+    "sha256": "2e0ee241678189b626d787b063de4aecc80049721fd14c72051550293c7a5bb8",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/despesa-ocr-politica.json",
+    "name": "Despesa (imagem ou PDF) → OCR alinhado à política",
+    "nodes": 5,
+    "sha256": "e0bb18b1885d212e2af1636211e1e06ee19fe6b4596a95bb2c9e7102f8a8101f",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/validacao-consistencia-despesa.json",
+    "name": "Despesa → Validação de consistência fiscal V1–V8",
+    "nodes": 3,
+    "sha256": "b970a90751ce1001d8a748acd5e4f234441f0bc49e4cfa66737e7d7f8e327ba5",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/workflow-unificado-cliente-stefanini.json",
+    "name": "Cliente Stefanini · política + despesa + consistência + parecer + custos",
+    "nodes": 22,
+    "sha256": "ed6d2285769579f9074587a9c451ae33aa46f125b4c8bb4a297393dbb833e1a2",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/workflow-unificado-cliente-stefanini-auditoria.json",
+    "name": "Cliente Stefanini · política + despesa + consistência + parecer + custos",
+    "nodes": 25,
+    "sha256": "1dcb1001bf7c8901dc2beded4d9c464de87bb88311805158aef8aef0d9ffe622",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/workflows/modelo-webhooks-politica-despesa-auditoria.json",
+    "name": "MODELO · política e despesa por webhook · auditoria",
+    "nodes": 33,
+    "sha256": "dfc2c70a5c5a465732ab2cd60eb32c8854f64b308393f7ecb5263f3423272c31",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/fragments/politica-workflow-backup.json",
+    "name": "PDF → OpenAI → Política categorizada",
+    "nodes": 5,
+    "sha256": "ad5f2b7528b8e11cea9d0395e2a4307569ba485cf0c12e4bcbba80a75bf58cc4",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/fragments/camada-contextual-import.json",
+    "name": "PDF → OpenAI → Política categorizada",
+    "nodes": 1,
+    "sha256": "1a7919839ef8a83e499048fb94c2bb6fbba7140ff187330297d95e7ec3b3a13c",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/fragments/no-relatorio-v2.json",
+    "name": "Relatório v2",
+    "nodes": 1,
+    "sha256": "a075213dbc950009a88b5fc048de3a145e5b631b6f22bd6763946c8eed3b191b",
+    "credentialsRemoved": true,
+    "active": false
+  },
+  {
+    "file": "n8n/fragments/receptor-callback-teste.json",
+    "name": "TESTE · receptor de callback (não publicar)",
+    "nodes": 2,
+    "sha256": "bb95d07f0045f3db31fbb42b5739f3bf3676ddfff4562bf26c39665a6d20de8f",
+    "credentialsRemoved": true,
+    "active": false
+  }
+]

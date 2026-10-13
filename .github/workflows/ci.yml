@@ -1,0 +1,24 @@
+name: Validar Worker e workflows
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: |
+          python3 - <<'PY'
+          import glob, json
+          for path in glob.glob('n8n/workflows/*.json') + glob.glob('n8n/fragments/*.json'):
+              data = json.load(open(path))
+              assert data['active'] is False
+              assert all('credentials' not in node for node in data['nodes'])
+          PY

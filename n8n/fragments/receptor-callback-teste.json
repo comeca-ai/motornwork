@@ -1,0 +1,54 @@
+{
+  "name": "TESTE · receptor de callback (não publicar)",
+  "nodes": [
+    {
+      "id": "fe53cd98-d5d7-4ea0-96ca-6275e37358ce",
+      "name": "Receber callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "848535bd-8292-4957-9a1d-f98bf895f2ab",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "modelo/v1/callback-teste",
+        "authentication": "none",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      }
+    },
+    {
+      "id": "c06ab839-b7a0-4a03-ad82-b05e70ed8eda",
+      "name": "Confirmar callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const b=$input.first().json.body??{};return [{json:{received:true,clientId:b.clientId,requestId:b.requestId,schema:b.schema,status:b.status}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Receber callback": {
+      "main": [
+        [
+          {
+            "node": "Confirmar callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
