@@ -26,7 +26,7 @@ Os JSONs foram copiados com `active=false`, sem credenciais n8n, IDs de workflow
 
 ## Subir o gateway no Cloudflare Worker
 
-Pré-requisitos: Node.js e npm, uma conta Cloudflare com Workers habilitado, acesso de deploy e o n8n já publicado em `https://primary-production-052d.up.railway.app`.
+Pré-requisitos: Node.js e npm, uma conta Cloudflare com Workers habilitado, acesso de deploy e o n8n já publicado em `https://reembolsa.app.n8n.cloud`.
 
 ```bash
 npm install
@@ -47,7 +47,7 @@ O Worker aceita arquivo até 15 MB e corpo multipart até 16 MB. Ele exige `clie
 Use a URL pública do gateway. O `callbackUrl` não é necessário:
 
 ```bash
-export MOTOR_URL='https://motornwork-gateway.jhonata-emerick.workers.dev'
+export MOTOR_URL='https://motornwork.jhonata-emerick.workers.dev'
 curl -i -X POST "$MOTOR_URL/webhook/modelo/v1/politicas/processar" \
   -F 'clientId=empresa_123' \
   -F 'requestId=politica-2026-001' \
