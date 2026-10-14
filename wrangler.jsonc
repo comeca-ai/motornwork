@@ -4,6 +4,12 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-13",
   "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "RESULTS_BUCKET",
+      "bucket_name": "motornwork-results"
+    }
+  ],
   "vars": {
     "N8N_BASE_URL": "https://primary-production-052d.up.railway.app"
   }

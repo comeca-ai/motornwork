@@ -1,12 +1,12 @@
 # Modelo multicliente: política e despesa por webhook
 
-O workflow importável está em `modelo-webhooks-politica-despesa-auditoria.json`. Ele recebe um arquivo por chamada, confirma o recebimento com HTTP 202 e envia o JSON completo ao `callbackUrl` do sistema transacional após a análise. O n8n não decide qual política está ativa nem mantém o cadastro das empresas neste modelo.
+O workflow importável está em `modelo-webhooks-politica-despesa-auditoria.json`. Ele recebe um arquivo por chamada, confirma o recebimento com HTTP 202 e envia o JSON completo ao `callbackUrl` após a análise. Pelo gateway Cloudflare, não envie `callbackUrl`: o gateway gera um receptor próprio, guarda o arquivo e o resultado no bucket R2 privado e devolve `resultUrl` e `resultToken` para consulta. O n8n não decide qual política está ativa nem mantém o cadastro das empresas neste modelo.
 
 ## Identidade e versões
 
 - `clientId`: identificador estável e único da empresa, criado pelo sistema transacional. Use letras minúsculas, números, `_` e `-`, com 2 a 64 caracteres.
 - `requestId`: identificador único da solicitação, criado pelo sistema transacional. Use-o para evitar processamento duplicado e vincular a resposta à transação original.
-- `callbackUrl`: URL HTTPS pública do sistema transacional que recebe um POST com o JSON completo quando a análise termina.
+- `callbackUrl`: URL HTTPS pública do sistema transacional que recebe um POST com o JSON completo quando a análise termina. É obrigatório no n8n direto; o gateway Cloudflare rejeita o campo e gera seu próprio callback para evitar destinos arbitrários.
 - `policyVersion`: versão imutável atribuída pelo sistema transacional. Uma atualização produz outra versão; nunca edite retroativamente a versão usada em uma despesa anterior.
 - O sistema transacional deve enviar à análise de despesa o `politicaJson` da versão aprovada e aplicável à data da despesa. O workflow confere a correspondência de `clientId` e `policyVersion`.
 
@@ -23,7 +23,7 @@ Envie `multipart/form-data` com exatamente um arquivo no campo `arquivo`, até *
 
 ### Política
 
-Campos: `clientId`, `requestId`, `policyVersion`, `action` (`create` ou `update`), `callbackUrl` e `arquivo` (PDF).
+Campos: `clientId`, `requestId`, `policyVersion`, `action` (`create` ou `update`) e `arquivo` (PDF). Envie `callbackUrl` apenas ao n8n direto.
 
 Exemplo de chamada (defina `CALLBACK_URL` com o endpoint HTTPS do seu sistema):
 
@@ -41,7 +41,7 @@ Resposta inicial: HTTP 202 com `status=recebido`, `clientId`, `requestId`, `rece
 
 ### Despesa
 
-Campos: `clientId`, `requestId`, `policyVersion`, `callbackUrl`, `politicaJson` (JSON da versão aprovada, serializado como texto) e `arquivo` (PDF, JPG, PNG ou WebP).
+Campos: `clientId`, `requestId`, `policyVersion`, `politicaJson` (JSON da versão aprovada, serializado como texto) e `arquivo` (PDF, JPG, PNG ou WebP). Envie `callbackUrl` apenas ao n8n direto. O catálogo deve trazer `clientId`, `policyVersion`, `categorias` não vazias, `regras` e `regrasGerais`.
 
 Exemplo com o catálogo já aprovado salvo em `politica-aprovada.json`:
 
@@ -73,4 +73,10 @@ No instante do recebimento pelo sistema transacional, grave o arquivo original s
 - O modelo confirma o recebimento com HTTP 202 e continua a execução até fazer POST do resultado em `callbackUrl`. O receptor deve devolver status 2xx, persistir o corpo integral e tratar chamadas repetidas por `(clientId, requestId)`.
 - A confirmação 202 atesta o recebimento e o hash. Falhas no processamento posterior precisam ser acompanhadas nas execuções do n8n; o modelo ainda não envia callback de erro nem faz nova tentativa de entrega.
 - O sistema transacional deve aplicar unicidade em `(clientId, requestId)` e em `(clientId, policyVersion)`, controlar acesso por empresa e guardar a resposta integral.
+
+## Sem receptor próprio: gateway Cloudflare
+
+Envie o mesmo multipart para `https://motornwork-gateway.jhonata-emerick.workers.dev/webhook/modelo/v1/despesas/analisar`, omitindo `callbackUrl`. O `HTTP 202` inclui `resultUrl` e `resultToken`. Consulte a URL com `GET` e cabeçalho `Authorization: Bearer <resultToken>`: `202` indica que o callback ainda não chegou; `200` inclui `state=completed` e o campo `result` com o JSON integral do n8n. Token errado ou job inexistente devolvem `404`. O arquivo original e o resultado ficam no bucket privado `motornwork-results`. Guarde o token separadamente da URL, sem expô-lo em logs ou a outros clientes. O serviço não apaga esses objetos automaticamente e rejeita `requestId` repetido para o mesmo cliente e tipo de fluxo com `409`.
+
+Se o n8n falhar após enviar o `202`, o resultado ficará pendente; após cinco minutos a consulta informa `aguardando_mais_que_5_minutos`. Isso requer exame da execução n8n, pois o modelo atual não manda callback em erro. Uma resposta `202` significa recebimento, não aprovação da despesa.
 - Os hashes identificam o arquivo recebido e o objeto de auditoria retornado. Eles não substituem assinatura digital nem armazenamento imutável.
