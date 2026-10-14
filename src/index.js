@@ -31,11 +31,22 @@ function validClientId(value) {
 
 export async function handleRequest(request, env, fetchImpl = fetch) {
   const url = new URL(request.url);
+  if (url.pathname === '/' && request.method === 'GET') {
+    return json(200, {
+      service: 'motornwork-gateway',
+      description: 'Gateway de entrada para o motor n8n. Envie arquivos por POST; o resultado é enviado ao callbackUrl.',
+      health: '/health',
+      endpoints: [
+        { method: 'POST', path: '/webhook/modelo/v1/politicas/processar' },
+        { method: 'POST', path: '/webhook/modelo/v1/despesas/analisar' },
+      ],
+    });
+  }
   if (url.pathname === '/health' && request.method === 'GET') {
     return json(200, { status: 'ok', service: 'motornwork-gateway' });
   }
   const upstreamPath = ROUTES.get(url.pathname);
-  if (!upstreamPath) return json(404, { error: 'Rota não encontrada' });
+  if (!upstreamPath) return json(404, { error: 'Rota não encontrada', endpoints: ['/', '/health', ...ROUTES.keys()] });
   if (request.method !== 'POST') return json(405, { error: 'Use POST' });
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('multipart/form-data;')) {
     return json(415, { error: 'Envie multipart/form-data' });
@@ -63,8 +74,15 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (url.pathname.includes('/politicas/')) {
     if (!['create', 'update'].includes(form.get('action'))) return json(400, { error: 'action deve ser create ou update' });
     if (files[0][1].type !== 'application/pdf') return json(415, { error: 'Política deve ser PDF' });
-  } else if (!form.get('politicaJson')) {
-    return json(400, { error: 'Informe politicaJson da versão aprovada' });
+  } else {
+    const policy = form.get('politicaJson');
+    if (typeof policy !== 'string' || !policy.trim()) return json(400, { error: 'Informe politicaJson da versão aprovada' });
+    try {
+      const parsed = JSON.parse(policy);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('política deve ser objeto');
+    } catch {
+      return json(400, { error: 'politicaJson deve ser um objeto JSON válido' });
+    }
   }
   const base = env.N8N_BASE_URL;
   if (!base || !/^https:\/\//.test(base)) return json(503, { error: 'N8N_BASE_URL não configurada' });

@@ -57,3 +57,19 @@ test('health não chama o n8n', async () => {
   const response = await handleRequest(new Request(base + '/health'), env, () => { throw new Error('não deve encaminhar'); });
   assert.equal(response.status, 200);
 });
+
+test('raiz informa as rotas disponíveis', async () => {
+  const response = await handleRequest(new Request(base + '/'), env, () => { throw new Error('não deve encaminhar'); });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.endpoints.map(({ path }) => path), [
+    '/webhook/modelo/v1/politicas/processar',
+    '/webhook/modelo/v1/despesas/analisar',
+  ]);
+});
+
+test('rejeita politicaJson truncado antes de chamar o n8n', async () => {
+  const response = await handleRequest(expenseRequest({ politicaJson: '{"regras": [' }), env, () => { throw new Error('não deve encaminhar'); });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /JSON válido/);
+});

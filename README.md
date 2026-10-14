@@ -38,6 +38,8 @@ npm run deploy
 
 `npm run build` usa `wrangler deploy --dry-run` e não publica. O `wrangler.jsonc` já contém `name`, `main`, `compatibility_date` e `N8N_BASE_URL`. Ao fazer deploy, Wrangler usará a conta Cloudflare autenticada e fornecerá a URL `*.workers.dev`. Nenhum segredo é exigido pelo gateway atual porque os webhooks n8n foram configurados sem autenticação. Se o n8n mudar de endereço, atualize somente `N8N_BASE_URL` no `wrangler.jsonc` e faça novo deploy. O endpoint `GET /health` confirma que o Worker responde; não atesta disponibilidade do n8n.
 
+Ao abrir a URL principal do Worker no navegador, `GET /` mostra as rotas disponíveis. As análises são iniciadas por `POST` nas rotas abaixo; abrir uma dessas rotas por `GET` devolve `405`. O gateway rejeita `politicaJson` que não seja um objeto JSON válido com `400`, antes de acionar o n8n. Isso evita o erro de parse após a confirmação `202`, mas a validação das regras da política ainda ocorre no motor.
+
 O Worker aceita arquivo até 15 MB e corpo multipart até 16 MB. Ele exige `clientId`, `requestId`, `policyVersion`, `callbackUrl` HTTPS e `arquivo`. Política exige PDF e `action=create|update`; despesa exige `politicaJson`. O Worker devolve o status e o corpo do n8n, inclusive a confirmação `HTTP 202`; o resultado completo é enviado **pelo n8n** ao `callbackUrl` informado. Não há autenticação nem campo de opt-in na chamada. O código não cria banco nem grava os documentos: o sistema transacional precisa preservar o arquivo original e persistir o callback integral.
 
 ### Exemplo: política
