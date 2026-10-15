@@ -12,5 +12,13 @@
   ],
   "vars": {
     "N8N_BASE_URL": "https://reembolsa.app.n8n.cloud"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "INDEX_DB",
+      "database_name": "motornwork-index",
+      "database_id": "5dfd4d0a-6d29-4322-8ec9-fba284741e9e",
+      "migrations_dir": "migrations"
+    }
+  ]
 }

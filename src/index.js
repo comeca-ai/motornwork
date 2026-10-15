@@ -1,3 +1,4 @@
+import { metrics, tryIndex, indexRecord, listRequests, report } from './catalog.js';
 const ROUTES = new Map([
   ['/webhook/modelo/v1/politicas/processar', '/webhook/modelo/v1/politicas/processar'],
   ['/webhook/modelo/v1/despesas/analisar', '/webhook/modelo/v1/despesas/analisar'],
@@ -34,21 +35,23 @@ async function loadRecord(bucket, id) {
   return record;
 }
 
-async function saveRecord(bucket, record) {
+async function saveRecord(bucket, record, db) {
+  record.revision = (record.revision ?? 0) + 1;
   const saved = await bucket.put(recordKey(record.id), JSON.stringify(record), {
     httpMetadata: { contentType: 'application/json' },
     ...(record._etag ? { onlyIf: { etagMatches: record._etag } } : {}),
   });
   if (saved === null) throw new Error('Registro alterado por outra execução');
+  await tryIndex(db, record);
 }
 
-async function markUpstreamError(bucket, id, status) {
+async function markUpstreamError(bucket, id, status, db) {
   try {
     const latest = await loadRecord(bucket, id);
     if (!latest || latest.state !== 'pending') return;
     latest.state = 'upstream_error';
     if (status) latest.upstreamStatus = status;
-    await saveRecord(bucket, latest);
+    await saveRecord(bucket, latest, db);
   } catch { /* preserve the original error response */ }
 }
 
@@ -63,7 +66,7 @@ async function deliverResult(bucket, id, env, fetchImpl) {
   if (!record.deliveryUrl || record.delivery?.state === 'delivered') return true;
   if (record.delivery?.state === 'sending' && Date.now() - Date.parse(record.delivery.attemptedAt) < 30000) return false;
   record.delivery = { state: 'sending', attempts: (record.delivery?.attempts || 0) + 1, attemptedAt: new Date().toISOString() };
-  try { await saveRecord(bucket, record); } catch { return false; }
+  try { await saveRecord(bucket, record, env.INDEX_DB); } catch { return false; }
   let status = null;
   try {
     const headers = { 'content-type': 'application/json', 'Idempotency-Key': record.id };
@@ -77,7 +80,7 @@ async function deliverResult(bucket, id, env, fetchImpl) {
   } catch { /* No secrets, URLs or response bodies in error records. */ }
   const latest = await loadRecord(bucket, id);
   latest.delivery = { ...record.delivery, state: status >= 200 && status < 300 ? 'delivered' : 'failed', httpStatus: status, finishedAt: new Date().toISOString() };
-  await saveRecord(bucket, latest);
+  await saveRecord(bucket, latest, env.INDEX_DB);
   return latest.delivery.state === 'delivered';
 }
 
@@ -126,6 +129,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (url.pathname === '/health' && request.method === 'GET') {
     return json(200, { status: 'ok', service: 'motornwork-gateway' });
   }
+  if (url.pathname.startsWith('/api/v1/')) return handleCatalog(request, env, url);
   const resultMatch = url.pathname.match(/^\/resultados\/v1\/([0-9a-f-]{36})(\/reenviar)?$/);
   if (resultMatch) {
     if (request.method !== (resultMatch[2] ? 'POST' : 'GET')) return json(405, { error: resultMatch[2] ? 'Use POST' : 'Use GET' });
@@ -139,6 +143,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
       const delivered = await deliverResult(env.RESULTS_BUCKET, record.id, env, fetchImpl);
       return json(delivered ? 200 : 502, { status: delivered ? 'entregue' : 'entrega_pendente' });
     }
+    await tryIndex(env.INDEX_DB, record);
     const state = record.state === 'pending' && Date.now() - Date.parse(record.createdAt) > 300000 ? 'aguardando_mais_que_5_minutos' : record.state;
     const response = json(record.state === 'pending' ? 202 : 200, { ...publicRecord(record), state });
     if (record.state === 'pending') response.headers.set('retry-after', '5');
@@ -164,6 +169,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     }
     const digest = await sha256(bytes);
     if (record.state === 'completed') {
+      await tryIndex(env.INDEX_DB, record);
       if (!equalHash(record.resultSha256, digest)) return json(409, { error: 'Resultado diferente já armazenado' });
       const delivered = await deliverResult(env.RESULTS_BUCKET, record.id, env, fetchImpl);
       return json(delivered ? 200 : 502, { status: delivered ? 'ja_recebido' : 'armazenado_entrega_pendente' });
@@ -172,7 +178,9 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     record.completedAt = new Date().toISOString();
     record.resultSha256 = digest;
     record.result = result;
-    try { await saveRecord(env.RESULTS_BUCKET, record); }
+    record.resultKey = `results/${record.id}/${digest}.json`;
+    await env.RESULTS_BUCKET.put(record.resultKey, bytes, { httpMetadata: { contentType: 'application/json' } });
+    try { await saveRecord(env.RESULTS_BUCKET, record, env.INDEX_DB); }
     catch {
       const latest = await loadRecord(env.RESULTS_BUCKET, callbackMatch[1]);
       return latest?.state === 'completed' && equalHash(latest.resultSha256, digest)
@@ -219,6 +227,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     } catch { return json(503, { error: 'Destino de retorno inválido na configuração' }); }
   }
   if (form.get('callbackUrl') && form.get('callbackUrl') !== deliveryUrl) return json(400, { error: 'callbackUrl deve corresponder ao destino configurado da integração' });
+  if (form.has('vendedorId') && (typeof form.get('vendedorId') !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(form.get('vendedorId')))) return json(400, { error: 'vendedorId inválido' });
   if (!env.RESULTS_BUCKET) return json(503, { error: 'Armazenamento de resultados não configurado' });
   if (url.pathname.includes('/politicas/')) {
     if (!['create', 'update'].includes(form.get('action'))) return json(400, { error: 'action deve ser create ou update' });
@@ -256,6 +265,8 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
       clientId: form.get('clientId'),
       requestId: form.get('requestId'),
       policyVersion: form.get('policyVersion'),
+      vendedorId: form.get('vendedorId') || null,
+      entrada: Object.fromEntries([...form.entries()].filter(([key,value]) => typeof value === 'string' && key !== 'callbackUrl')),
       createdAt: new Date().toISOString(),
       state: 'pending',
       deliveryUrl,
@@ -279,7 +290,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     if (claimed === null) return json(409, { error: 'requestId já recebido para este clientId e tipo de fluxo' });
     try {
       await env.RESULTS_BUCKET.put(fileKey(id), fileBytes, { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
-      await saveRecord(env.RESULTS_BUCKET, record);
+      await saveRecord(env.RESULTS_BUCKET, record, env.INDEX_DB);
     } catch {
       await Promise.allSettled([env.RESULTS_BUCKET.delete(uniqueKey), env.RESULTS_BUCKET.delete(fileKey(id))]);
       return json(503, { error: 'Não foi possível guardar a solicitação' });
@@ -294,18 +305,66 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
       redirect: 'manual',
     });
   } catch {
-    if (record) await markUpstreamError(env.RESULTS_BUCKET, record.id);
+    if (record) await markUpstreamError(env.RESULTS_BUCKET, record.id, null, env.INDEX_DB);
     return json(502, { error: 'Falha ao conectar ao motor n8n' });
   }
   const upstreamText = await upstream.text();
   if (upstream.status !== 202) {
-    await markUpstreamError(env.RESULTS_BUCKET, record.id, upstream.status);
+    await markUpstreamError(env.RESULTS_BUCKET, record.id, upstream.status, env.INDEX_DB);
     return new Response(upstreamText, { status: upstream.status, headers: { 'content-type': upstream.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' } });
   }
   let receipt;
   try { receipt = JSON.parse(upstreamText); }
   catch { receipt = { status: 'recebido', respostaMotor: upstreamText }; }
-  return json(202, { ...receipt, resultUrl, resultToken });
+  return json(202, { ...receipt, id: record.id, clientId: record.clientId, requestId: record.requestId, policyVersion: record.policyVersion, resultUrl, resultToken });
 }
 
 export default { fetch: (request, env) => handleRequest(request, env) };
+
+async function handleCatalog(request,env,url) {
+ const auth=await authenticateEntry(request,env);if(auth.response)return auth.response;
+ if(!env.RESULTS_BUCKET)return json(503,{error:'R2 não configurado'});
+ if(url.pathname==='/api/v1/indice/reconstruir'){
+  if(request.method!=='POST')return json(405,{error:'Use POST'});
+  if(!env.INDEX_DB)return json(503,{error:'Índice D1 não configurado'});
+  const page=await env.RESULTS_BUCKET.list({prefix:'requests/',limit:100,...(url.searchParams.get('cursor')?{cursor:url.searchParams.get('cursor')}: {})});
+  let indexed=0;const failed=[];
+  for(const object of page.objects){
+   try{const stored=await env.RESULTS_BUCKET.get(object.key);if(!stored)continue;await indexRecord(env.INDEX_DB,JSON.parse(await stored.text()));indexed++;}
+   catch{failed.push(object.key);}
+  }
+  return json(200,{indexed,failed,nextCursor:page.truncated?page.cursor:null});
+ }
+ if(request.method!=='GET')return json(405,{error:'Use GET'});
+ const clientId=url.searchParams.get('clientId');
+ if(!allowedClientId(clientId))return json(400,{error:'Informe clientId de 100 a 1000'});
+ const match=url.pathname.match(/^\/api\/v1\/solicitacoes\/([0-9a-f-]{36})(?:\/(arquivo|medicao|resultado-original))?$/);
+ if(match){
+  const r=await loadRecord(env.RESULTS_BUCKET,match[1]);
+  if(!r||r.clientId!==clientId)return json(404,{error:'Solicitação não encontrada'});
+  await tryIndex(env.INDEX_DB,r);
+  if(match[2]==='resultado-original'){
+   if(!r.resultKey)return json(404,{error:'Bytes originais do callback não disponíveis neste registro; consulte result'});
+   const raw=await env.RESULTS_BUCKET.get(r.resultKey);if(!raw)return json(404,{error:'Resultado original não encontrado'});
+   return new Response(raw.body,{headers:{'content-type':'application/json','cache-control':'no-store'}});
+  }
+  if(match[2]==='arquivo'){
+   const file=await env.RESULTS_BUCKET.get(r.file.key);if(!file)return json(404,{error:'Arquivo não encontrado'});
+   return new Response(file.body,{headers:{'content-type':r.file.type||'application/octet-stream',
+    'content-disposition':`attachment; filename*=UTF-8''${encodeURIComponent(r.file.name).replace(/'/g,'%27')}`,
+    'cache-control':'no-store','x-content-type-options':'nosniff'}});
+  }
+  if(match[2]==='medicao')return json(200,{id:r.id,clientId:r.clientId,requestId:r.requestId,state:r.state,...metrics(r)});
+  return json(r.state==='pending'?202:200,publicRecord(r));
+ }
+ if(!['/api/v1/solicitacoes','/api/v1/relatorios/processamento'].includes(url.pathname))return json(404,{error:'Rota não encontrada'});
+ if(!env.INDEX_DB)return json(503,{error:'Índice D1 não configurado'});
+ try{
+  // Parse client filters separately so database failures are not reported as user errors.
+  if(url.pathname==='/api/v1/solicitacoes')return json(200,await listRequests(env.INDEX_DB,url.searchParams));
+  return json(200,await report(env.INDEX_DB,url.searchParams));
+ }catch(e){
+  const validation=/^(Filtro |from|limit |Cursor )/.test(e.message);
+  return json(validation?400:503,{error:validation?e.message:'Índice temporariamente indisponível; use a consulta individual no R2'});
+ }
+}
