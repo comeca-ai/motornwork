@@ -1,4 +1,6 @@
-# Autenticação e retorno — implementação local, aguardando configuração/publicação
+# Autenticação e retorno — configuração publicada
+
+Autenticação publicada no Worker e no n8n. Retorno externo é opcional e permanece sem destino configurado; R2/D1 e consulta funcionam sem ele. Veja [guia completo](GUIA-INTEGRACAO-IA.md).
 
 ## Entrada
 
@@ -46,7 +48,7 @@ Solicitações anteriores sem destino configurado conservam somente a consulta.
 
 ## Verificação
 
-27 testes locais: entrada autenticada, faixa clientId, preservação do arquivo,
+Testes locais: entrada autenticada, faixa clientId, preservação do arquivo,
 callback interno, identidade, deduplicação, consulta protegida, entrega integral,
 falha de receptor e recuperação sem nova análise. Integração real depende da
 URL de destino e das credenciais em produção. Não confundir testes simulados
