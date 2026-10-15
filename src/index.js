@@ -53,8 +53,32 @@ async function markUpstreamError(bucket, id, status) {
 }
 
 function publicRecord(record) {
-  const { readTokenHash, callbackTokenHash, ...visible } = record;
+  const { readTokenHash, callbackTokenHash, deliveryUrl, ...visible } = record;
   return visible;
+}
+
+// Delivery is independent of OCR: failures preserve the complete stored result.
+async function deliverResult(bucket, id, env, fetchImpl) {
+  const record = await loadRecord(bucket, id);
+  if (!record.deliveryUrl || record.delivery?.state === 'delivered') return true;
+  if (record.delivery?.state === 'sending' && Date.now() - Date.parse(record.delivery.attemptedAt) < 30000) return false;
+  record.delivery = { state: 'sending', attempts: (record.delivery?.attempts || 0) + 1, attemptedAt: new Date().toISOString() };
+  try { await saveRecord(bucket, record); } catch { return false; }
+  let status = null;
+  try {
+    const headers = { 'content-type': 'application/json', 'Idempotency-Key': record.id };
+    if (env.CLIENT_CALLBACK_TOKEN) headers.Authorization = `Bearer ${env.CLIENT_CALLBACK_TOKEN}`;
+    const response = await fetchImpl(record.deliveryUrl, {
+      method: 'POST', headers, body: JSON.stringify(record.result), redirect: 'manual',
+      signal: AbortSignal.timeout(10000),
+    });
+    status = response.status;
+    if (response.body) await response.body.cancel();
+  } catch { /* No secrets, URLs or response bodies in error records. */ }
+  const latest = await loadRecord(bucket, id);
+  latest.delivery = { ...record.delivery, state: status >= 200 && status < 300 ? 'delivered' : 'failed', httpStatus: status, finishedAt: new Date().toISOString() };
+  await saveRecord(bucket, latest);
+  return latest.delivery.state === 'delivered';
 }
 
 function json(status, data) {
@@ -66,6 +90,23 @@ function json(status, data) {
 
 function validClientId(value) {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9_-]{1,63}$/.test(value);
+}
+
+// The integration token authenticates the transactional system, not an individual company.
+// clientId is canonical decimal text, inclusive range 100..1000.
+function allowedClientId(value) {
+  return typeof value === 'string' && /^(?:[1-9][0-9]{2}|1000)$/.test(value);
+}
+async function authenticateEntry(request, env) {
+  if (!/^[a-f0-9]{64}$/.test(env.INTEGRATION_TOKEN_SHA256 ?? '') ||
+      typeof env.N8N_WEBHOOK_SECRET !== 'string' || env.N8N_WEBHOOK_SECRET.length < 32) {
+    return { response: json(503, { error: 'Autenticação da integração não configurada' }) };
+  }
+  const supplied = request.headers.get('authorization')?.match(/^Bearer ([A-Za-z0-9_-]{32,256})$/)?.[1];
+  if (!supplied || !equalHash(await sha256(supplied), env.INTEGRATION_TOKEN_SHA256)) {
+    return { response: json(401, { error: 'Token de integração ausente ou inválido' }) };
+  }
+  return {};
 }
 
 export async function handleRequest(request, env, fetchImpl = fetch) {
@@ -85,14 +126,19 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (url.pathname === '/health' && request.method === 'GET') {
     return json(200, { status: 'ok', service: 'motornwork-gateway' });
   }
-  const resultMatch = url.pathname.match(/^\/resultados\/v1\/([0-9a-f-]{36})$/);
+  const resultMatch = url.pathname.match(/^\/resultados\/v1\/([0-9a-f-]{36})(\/reenviar)?$/);
   if (resultMatch) {
-    if (request.method !== 'GET') return json(405, { error: 'Use GET' });
+    if (request.method !== (resultMatch[2] ? 'POST' : 'GET')) return json(405, { error: resultMatch[2] ? 'Use POST' : 'Use GET' });
     if (!env.RESULTS_BUCKET) return json(503, { error: 'Armazenamento de resultados não configurado' });
     const supplied = request.headers.get('authorization')?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
     if (!supplied) return json(404, { error: 'Resultado não encontrado' });
     const record = await loadRecord(env.RESULTS_BUCKET, resultMatch[1]);
     if (!record || !equalHash(await sha256(supplied), record.readTokenHash)) return json(404, { error: 'Resultado não encontrado' });
+    if (resultMatch[2]) {
+      if (record.state !== 'completed' || !record.deliveryUrl) return json(409, { error: 'Resultado ou destino de entrega indisponível' });
+      const delivered = await deliverResult(env.RESULTS_BUCKET, record.id, env, fetchImpl);
+      return json(delivered ? 200 : 502, { status: delivered ? 'entregue' : 'entrega_pendente' });
+    }
     const state = record.state === 'pending' && Date.now() - Date.parse(record.createdAt) > 300000 ? 'aguardando_mais_que_5_minutos' : record.state;
     const response = json(record.state === 'pending' ? 202 : 200, { ...publicRecord(record), state });
     if (record.state === 'pending') response.headers.set('retry-after', '5');
@@ -118,7 +164,9 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     }
     const digest = await sha256(bytes);
     if (record.state === 'completed') {
-      return equalHash(record.resultSha256, digest) ? json(200, { status: 'ja_recebido' }) : json(409, { error: 'Resultado diferente já armazenado' });
+      if (!equalHash(record.resultSha256, digest)) return json(409, { error: 'Resultado diferente já armazenado' });
+      const delivered = await deliverResult(env.RESULTS_BUCKET, record.id, env, fetchImpl);
+      return json(delivered ? 200 : 502, { status: delivered ? 'ja_recebido' : 'armazenado_entrega_pendente' });
     }
     record.state = 'completed';
     record.completedAt = new Date().toISOString();
@@ -131,11 +179,14 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
         ? json(200, { status: 'ja_recebido' })
         : json(409, { error: 'Resultado diferente já armazenado' });
     }
-    return json(200, { status: 'armazenado', requestId: record.requestId });
+    const delivered = await deliverResult(env.RESULTS_BUCKET, record.id, env, fetchImpl);
+    return json(delivered ? 200 : 502, { status: delivered ? 'armazenado' : 'armazenado_entrega_pendente', requestId: record.requestId });
   }
   const upstreamPath = ROUTES.get(url.pathname);
   if (!upstreamPath) return json(404, { error: 'Rota não encontrada', endpoints: ['/', '/health', ...ROUTES.keys(), '/resultados/v1/{id}'] });
   if (request.method !== 'POST') return json(405, { error: 'Use POST' });
+  const entryAuth = await authenticateEntry(request, env);
+  if (entryAuth.response) return entryAuth.response;
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('multipart/form-data;')) {
     return json(415, { error: 'Envie multipart/form-data' });
   }
@@ -158,7 +209,16 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (!validClientId(form.get('clientId')) || !form.get('requestId') || !form.get('policyVersion')) {
     return json(400, { error: 'Informe clientId, requestId e policyVersion' });
   }
-  if (form.get('callbackUrl')) return json(400, { error: 'Não envie callbackUrl ao gateway; o resultado será recebido e armazenado pelo próprio Worker' });
+  if (!allowedClientId(form.get('clientId'))) return json(403, { error: 'clientId deve ser texto numérico de 100 a 1000, sem zeros à esquerda' });
+  let deliveryUrl = null;
+  if (env.CLIENT_CALLBACK_URL) {
+    try {
+      const target = new URL(env.CLIENT_CALLBACK_URL);
+      if (target.protocol !== 'https:' || target.username || target.password || target.hash) throw new Error();
+      deliveryUrl = target.toString();
+    } catch { return json(503, { error: 'Destino de retorno inválido na configuração' }); }
+  }
+  if (form.get('callbackUrl') && form.get('callbackUrl') !== deliveryUrl) return json(400, { error: 'callbackUrl deve corresponder ao destino configurado da integração' });
   if (!env.RESULTS_BUCKET) return json(503, { error: 'Armazenamento de resultados não configurado' });
   if (url.pathname.includes('/politicas/')) {
     if (!['create', 'update'].includes(form.get('action'))) return json(400, { error: 'action deve ser create ou update' });
@@ -198,6 +258,8 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
       policyVersion: form.get('policyVersion'),
       createdAt: new Date().toISOString(),
       state: 'pending',
+      deliveryUrl,
+      delivery: { state: deliveryUrl ? 'waiting_result' : 'not_configured', attempts: 0 },
       readTokenHash: await sha256(readToken),
       callbackTokenHash: await sha256(callbackToken),
       file: { name: file.name, type: file.type, size: file.size, sha256: await sha256(fileBytes), key: fileKey(id) },
@@ -227,7 +289,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   try {
     upstream = await fetchImpl(upstreamUrl, {
       method: 'POST',
-      headers: { 'content-type': upstreamContentType },
+      headers: { 'content-type': upstreamContentType, 'X-Motor-Secret': env.N8N_WEBHOOK_SECRET },
       body: bytes,
       redirect: 'manual',
     });
